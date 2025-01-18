@@ -1,8 +1,19 @@
 services:
 
+  redis:
+    image: redis:6.2-alpine
+    container_name: msw-test-redis
+    ports:
+      - '6379:6379'
+    command: redis-server --save 20 1 --loglevel warning
+    volumes:
+      - db_redis:/data
+    networks:
+      - msw_net
+
   mosquitto:
-    image: eclipse-mosquitto
-    container_name: msw-mqtt-broker
+    image: eclipse-mosquitto:2
+    container_name: msw-test-mosquitto
     ports:
       - 1883:1883
       - 9001:9001
@@ -17,3 +28,5 @@ networks:
   msw_net:
     driver: bridge
 
+volumes:
+  db_redis:

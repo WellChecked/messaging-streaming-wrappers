@@ -2,3 +2,5 @@ pydantic
 protobuf
 paho-mqtt
 sparkplug_b_packets
+redis[hiredis]
+redis-streams
