@@ -1,5 +1,7 @@
 .idea/
-mosquitto/
+mosquitto/logs
+mosquitto/data/
+freeze.txt
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

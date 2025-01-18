@@ -1,9 +1,8 @@
-# docker-compose for development and local testing
 services:
 
   mosquitto:
-    image: eclipse-mosquitto:2
-    container_name: msw-test-mosquitto
+    image: eclipse-mosquitto
+    container_name: msw-mqtt-broker
     ports:
       - 1883:1883
       - 9001:9001
@@ -17,3 +16,4 @@ services:
 networks:
   msw_net:
     driver: bridge
+
