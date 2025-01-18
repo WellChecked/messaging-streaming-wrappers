@@ -1,0 +1,8 @@
+pydantic
+protobuf
+paho-mqtt
+sparkplug_b_packets
+setuptools
+wheel
+build
+twine

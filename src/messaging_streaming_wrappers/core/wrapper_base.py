@@ -1,0 +1,130 @@
+from abc import abstractmethod
+from typing import Any, Callable, cast
+
+from paho.mqtt import matcher as mqtt_matcher
+
+from messaging_streaming_wrappers.core.helpers.logging_helpers import get_logger
+log = get_logger(__name__)
+
+
+class MessageReceiver:
+
+    def __init__(self):
+        self._matcher = mqtt_matcher.MQTTMatcher()
+        self._topics = []
+
+    @property
+    def topics(self):
+        return self._topics
+
+    def register_handler(self, topic: str, handler: Callable[[str, Any, dict], None]):
+        """
+        Register a handler for a topic pattern.  The topic can utilize MQTT wildcards.  If there
+        is already a topic handler assigned the old handler will be replaced.
+        :param topic: topic pattern
+        :param handler: a callable handler to be called when a message is received
+        :return: bool True
+        """
+        self._matcher[topic] = handler
+        self._topics.append(topic)
+        return True
+
+    def unregister_handler(self, topic: str):
+        """
+        Unregister a handler for a topic pattern.  The topic must match the same pattern used originally when
+        registering a handler.
+        :param topic: topic pattern
+        :return: bool True if removed, otherwise False.
+        """
+        if topic not in self._matcher:
+            return False
+
+        del self._matcher[topic]
+        self._topics.remove(topic)
+        return True
+
+    def receive(self, topic: str, payload: Any, params: dict = None):
+        """
+        Handle a received message divvying the processing out to a handle via the topic matcher.  A previously
+        registered topic matches the handler to be called.
+        :param topic: message topic
+        :param payload: message payload
+        :param params: any associated keyword arguments specific to the message receiver
+        :return: None
+        """
+        log.debug(f"Received message on topic {topic}: {payload} --- {params}")
+        for handler in self._matcher.iter_match(topic):
+            handler(topic, payload, params)
+
+
+class Publisher:
+
+    @abstractmethod
+    def publish(self, topic: str, message: Any, **kwargs: Any):
+        """
+        Publish a message associated with the topic using the implemented messaging platform.
+        :param topic: topic associated with the message to be published
+        :param message: message to be published
+        :return: Tuple[int, int] return code (0 == success) and message id
+        """
+        pass
+
+
+class Subscriber:
+
+    def __init__(self, message_receiver: MessageReceiver):
+        self._message_receiver = message_receiver
+
+    @property
+    def message_receiver(self):
+        return cast(self._message_receiver.__class__, self._message_receiver)
+
+    @staticmethod
+    def print_message(topic: str, message: Any, params: dict = None):
+        print(f"Received message on topic {topic}: {message} --- {params}")
+
+    @abstractmethod
+    def subscribe(self, topic: str, callback: Callable[[str, Any, dict], None]):
+        pass
+
+    @abstractmethod
+    def unsubscribe(self, topic: str):
+        pass
+
+    @abstractmethod
+    def establish_subscriptions(self):
+        pass
+
+
+class MessageManager:
+
+    def __init__(self, publisher: Publisher, subscriber: Subscriber):
+        self._publisher = publisher
+        self._subscriber = subscriber
+
+    @property
+    @abstractmethod
+    def publisher(self):
+        pass
+
+    @property
+    @abstractmethod
+    def subscriber(self):
+        pass
+
+    @property
+    @abstractmethod
+    def message_receiver(self):
+        pass
+
+    def connect(self, **kwargs):
+        pass
+
+    def start(self):
+        pass
+
+    def shutdown(self):
+        pass
+
+    def publish(self, topic: str, message: Any):
+        self._publisher.publish(topic, message)
