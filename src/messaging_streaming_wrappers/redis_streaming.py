@@ -4,12 +4,13 @@ import time
 from abc import ABC, abstractmethod
 from threading import Thread
 from typing import Any, Callable
+from xmlrpc.client import Marshaller
 
 from pydantic import BaseModel
 from redis import Redis
 from redis_streams.consumer import Consumer, RedisMsg
 
-from messaging_streaming_wrappers.core.wrapper_base import MessageManager, MessageReceiver, Publisher, Subscriber
+from messaging_streaming_wrappers.core.wrapper_base import MarshalerFactory, MessageManager, MessageReceiver, Publisher, Subscriber
 from messaging_streaming_wrappers.core.helpers.logging_helpers import get_logger
 
 log = get_logger(__name__)
@@ -18,6 +19,7 @@ log = get_logger(__name__)
 class RedisMessage(BaseModel):
     mid: str
     ts: int
+    type: str
     topic: str
     payload: Any
 
@@ -94,19 +96,17 @@ class RedisStreamConsumer(Thread, ABC):
 
 class RedisPublisher(Publisher):
 
-    def __init__(self, redis_client: Redis, stream_name: str):
+    def __init__(self, redis_client: Redis, stream_name: str, **kwargs: Any):
         self._redis_client = redis_client
         self._stream_name = stream_name
 
     def publish(self, topic: str, message: Any, **kwargs: Any):
-        if kwargs:
-            log.debug(f"kwargs: [{kwargs}] ignored")
-
+        marshaler = MarshalerFactory.create(kwargs.get("marshaler", "json"))
         payload = RedisMessage(
             mid=uuid.uuid4().hex,
             ts=int(time.time() * 1000),
             topic=topic,
-            payload=json.dumps(message) if isinstance(message, dict) else message
+            payload=marshaler.marshal(message),
         )
         mid = self._redis_client.xadd(name=self._stream_name, fields=payload.model_dump())
         return 0, mid

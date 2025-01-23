@@ -1,4 +1,6 @@
-from abc import abstractmethod
+import json
+import pickle
+from abc import ABC, abstractmethod
 from typing import Any, Callable, cast
 
 from paho.mqtt import matcher as mqtt_matcher
@@ -55,6 +57,85 @@ class MessageReceiver:
         log.debug(f"Received message on topic {topic}: {payload} --- {params}")
         for handler in self._matcher.iter_match(topic):
             handler(topic, payload, params)
+
+
+class Marshaler(ABC):
+
+    def __init__(self, marshal_type: str = None):
+        self._marshal_type = marshal_type if marshal_type else "json"
+
+    @property
+    def type(self):
+        return self._marshal_type
+
+    @abstractmethod
+    def marshal(self, message: Any):
+        pass
+
+    @abstractmethod
+    def unmarshal(self, message: Any):
+        pass
+
+
+class JsonMarshal(Marshaler):
+
+    def __init__(self):
+        super().__init__(marshal_type="json")
+
+    def marshal(self, message: Any) -> str:
+        return json.dumps(message)
+
+    def unmarshal(self, message: Any) -> dict:
+        return json.loads(message)
+
+
+class PickleMarshal(Marshaler):
+
+    def __init__(self):
+        super().__init__(marshal_type="pickle")
+
+    def marshal(self, message: Any) -> bytes:
+        return pickle.dumps(message)
+
+    def unmarshal(self, message: Any) -> dict:
+        return pickle.loads(message)
+
+
+class TextMarshal(Marshaler):
+
+    def __init__(self):
+        super().__init__(marshal_type="text")
+
+    def marshal(self, message: Any) -> str:
+        return message
+
+    def unmarshal(self, message: Any) -> str:
+        return message
+
+
+class MarshalerFactory:
+
+    def __init__(self, marshalers: list = None):
+        self._marshalers = {}
+        if not marshalers:
+            self._marshalers = {
+                "json": JsonMarshal(),
+                "pickle": PickleMarshal(),
+                "text": TextMarshal()
+            }
+        else:
+            for marshaler in marshalers:
+                self._marshalers[marshaler.type] = marshaler
+
+    @property
+    def marshalers(self) -> list:
+        return list(self._marshalers.keys())
+
+    def create(self, marshaler_type: str):
+        if marshaler_type in self._marshalers:
+            return self._marshalers[marshaler_type]
+        else:
+            raise ValueError(f"Unknown marshaler type: {marshaler_type}")
 
 
 class Publisher:
