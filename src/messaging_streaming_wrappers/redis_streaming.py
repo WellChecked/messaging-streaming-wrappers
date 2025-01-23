@@ -146,19 +146,20 @@ class RedisMessageReceiver(MessageReceiver):
                 log.debug(">>> JSONDecodeError:", e)
                 return msg
 
-        content = message.content
-        message_mid = content['mid']
-        message_ts = content['ts']
-        message_topic = content['topic']
-        message_payload = content['payload']
-        published_payload = get_published_payload(message_payload)
-        self.receive(topic=message_topic, payload={"payload": published_payload}, params={
-            "i": index,
-            "n": total,
-            "ts": message_ts,
-            "mid": message_mid,
-            "message": message
-        })
+        for msgid, content in message.content:
+            message_mid = content[b'mid'].decode("utf-8")
+            message_ts = int(content[b'ts'].decode("utf-8"))
+            message_topic = content[b'topic'].decode("utf-8")
+            message_payload = content[b'payload'].decode("utf-8")
+            published_payload = get_published_payload(message_payload)
+            self.receive(topic=message_topic, payload={"payload": published_payload}, params={
+                "i": index,
+                "n": total,
+                "ts": message_ts,
+                "mid": message_mid,
+                "msgid": msgid.decode("utf-8"),
+                "content": content
+            })
 
 
 class RedisSubscriber(Subscriber):
