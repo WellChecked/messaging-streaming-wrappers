@@ -1,16 +1,16 @@
-import json
 import uuid
 import time
-from abc import ABC, abstractmethod
+
+from abc import ABC
 from threading import Thread
-from typing import Any, Callable
-from xmlrpc.client import Marshaller
+from typing import Any, Callable, Tuple
 
 from pydantic import BaseModel
 from redis import Redis
 from redis_streams.consumer import Consumer, RedisMsg
 
-from messaging_streaming_wrappers.core.wrapper_base import MarshalerFactory, MessageManager, MessageReceiver, Publisher, Subscriber
+from messaging_streaming_wrappers.core.wrapper_base import (MarshalerFactory, MessageManager, MessageReceiver,
+                                                            Publisher, Subscriber)
 from messaging_streaming_wrappers.core.helpers.logging_helpers import get_logger
 
 log = get_logger(__name__)
@@ -85,9 +85,11 @@ class RedisStreamConsumer(Thread, ABC):
             for i, item in enumerate(messages, 1):
                 log.debug(f"Consuming {i}/{total_messages} message:{item}")
                 try:
-                    if item.content:
-                        self.callback(index=i, total=total_messages, message=item)
-                    self._consumer.remove_item_from_stream(item_id=item.msgid)
+                    for msgid, content in item.content:
+                        msgid = msgid.decode("utf-8")
+                        if content:
+                            self.callback(index=i, total=total_messages, message=(msgid, content))
+                        self._consumer.remove_item_from_stream(item_id=msgid)
                 except Exception as e:
                     log.error(f"Error while processing message: {e}")
                     log.exception("A problem occurred while ingesting a message")
@@ -99,12 +101,15 @@ class RedisPublisher(Publisher):
     def __init__(self, redis_client: Redis, stream_name: str, **kwargs: Any):
         self._redis_client = redis_client
         self._stream_name = stream_name
+        self._marshaler_factory = MarshalerFactory() if "marshaler_factory" not in kwargs \
+            else kwargs.get("marshaler_factory")
 
     def publish(self, topic: str, message: Any, **kwargs: Any):
-        marshaler = MarshalerFactory.create(kwargs.get("marshaler", "json"))
+        marshaler = self._marshaler_factory.create(marshaler_type=kwargs.get("marshaler", "json"))
         payload = RedisMessage(
             mid=uuid.uuid4().hex,
             ts=int(time.time() * 1000),
+            type=marshaler.type_name,
             topic=topic,
             payload=marshaler.marshal(message),
         )
@@ -114,8 +119,19 @@ class RedisPublisher(Publisher):
 
 class RedisMessageReceiver(MessageReceiver):
 
-    def __init__(self, redis_client: Redis, stream_name: str, consumer_group: str = None, batch_size: int = 10, max_wait_time_ms: int = 5000):
+    def __init__(
+            self,
+            redis_client: Redis,
+            stream_name: str,
+            consumer_group: str = None,
+            batch_size: int = 10,
+            max_wait_time_ms: int = 5000,
+            **kwargs: Any
+    ):
         super().__init__()
+        self._marshaler_factory = MarshalerFactory() if "marshaler_factory" not in kwargs \
+            else kwargs.get("marshaler_factory")
+
         self._redis_stream_consumer = RedisStreamConsumer(
             redis=redis_client,
             stream=stream_name,
@@ -138,28 +154,29 @@ class RedisMessageReceiver(MessageReceiver):
         self._redis_stream_consumer.stop()
         self._redis_stream_consumer.join()
 
-    def on_message(self, index: int, total: int, message: RedisMsg):
-        def get_published_payload(msg):
-            try:
-                return json.loads(message_payload)
-            except json.JSONDecodeError as e:
-                log.debug(">>> JSONDecodeError:", e)
-                return msg
+    def on_message(self, index: int, total: int, message: Tuple[str, dict]):
+        def unmarshal_payload(payload, marshal_type):
+            marshaler = self._marshaler_factory.create(marshaler_type=marshal_type)
+            return marshaler.unmarshal(payload)
 
-        for msgid, content in message.content:
-            message_mid = content[b'mid'].decode("utf-8")
-            message_ts = int(content[b'ts'].decode("utf-8"))
-            message_topic = content[b'topic'].decode("utf-8")
-            message_payload = content[b'payload'].decode("utf-8")
-            published_payload = get_published_payload(message_payload)
-            self.receive(topic=message_topic, payload={"payload": published_payload}, params={
-                "i": index,
-                "n": total,
-                "ts": message_ts,
-                "mid": message_mid,
-                "msgid": msgid.decode("utf-8"),
-                "content": content
-            })
+        msgid, content = message
+        log.debug(f"Received message on index {index} of {total} with msgid {msgid} and content {content}")
+
+        message_mid = content[b'mid'].decode("utf-8") if b'mid' in content else msgid
+        message_ts = int(content[b'ts'].decode("utf-8")) if b'ts' in content else int(time.time() * 1000)
+        message_type = content[b'type'].decode("utf-8") if b'type' in content else 'json'
+        message_topic = content[b'topic'].decode("utf-8")
+        message_payload = content[b'payload'].decode("utf-8")
+        published_payload = unmarshal_payload(payload=message_payload, marshal_type=message_type)
+        self.receive(topic=message_topic, payload={"payload": published_payload}, params={
+            "i": index,
+            "n": total,
+            "ts": message_ts,
+            "mid": message_mid,
+            "msgid": msgid,
+            "type": message_type,
+            "content": content
+        })
 
 
 class RedisSubscriber(Subscriber):

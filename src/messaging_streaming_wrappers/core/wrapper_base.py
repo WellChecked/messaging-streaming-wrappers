@@ -6,6 +6,7 @@ from typing import Any, Callable, cast
 from paho.mqtt import matcher as mqtt_matcher
 
 from messaging_streaming_wrappers.core.helpers.logging_helpers import get_logger
+
 log = get_logger(__name__)
 
 
@@ -65,7 +66,7 @@ class Marshaler(ABC):
         self._marshal_type = marshal_type if marshal_type else "json"
 
     @property
-    def type(self):
+    def type_name(self):
         return self._marshal_type
 
     @abstractmethod
@@ -125,13 +126,14 @@ class MarshalerFactory:
             }
         else:
             for marshaler in marshalers:
-                self._marshalers[marshaler.type] = marshaler
+                self._marshalers[marshaler.type_name.lower()] = marshaler
 
     @property
     def marshalers(self) -> list:
         return list(self._marshalers.keys())
 
-    def create(self, marshaler_type: str):
+    def create(self, marshaler_type: str = None):
+        marshaler_type = marshaler_type.lower() if marshaler_type else "json"
         if marshaler_type in self._marshalers:
             return self._marshalers[marshaler_type]
         else:
