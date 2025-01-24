@@ -1,7 +1,8 @@
-from typing import Dict
+from typing import Dict, Any
 
 import paho.mqtt.client as mqtt
 from sparkplub_b_packets.builder import EdgeDevice, EdgeNode
+from sparkplub_b_packets.core import sparkplug_b_pb2
 
 from messaging_streaming_wrappers.mqtt_messaging import MqttMessageManager, MqttPublisher, MqttSubscriber
 from messaging_streaming_wrappers.core.helpers.logging_helpers import get_logger
@@ -51,6 +52,28 @@ class SparkplugBMessageManager(MqttMessageManager):
                 topic=edge_device.birth_certificate().topic,
                 payload=edge_device.birth_certificate().payload()
             )
+
+    def parse_sparkplug_b_payload(self, payload):
+        spb_payload = sparkplug_b_pb2.Payload()
+        spb_payload.ParseFromString(payload)
+        return spb_payload
+
+    def on_ncmd_message(self, topic: str, message: Any, params: dict = None):
+        print(f"Received message on topic {topic}: {message} --- {params}")
+        payload = self.parse_sparkplug_b_payload(message)
+        for metric in payload.metrics:
+            if metric.name and metric.name == 'Node Control/Rebirth':
+                self._publish_node_birth(self._mqtt_client)
+                self._publish_device_births(self._mqtt_client)
+            if metric.name and metric.name == 'Node Control/Reboot':
+                self._publish_node_birth(self._mqtt_client)
+                self._publish_device_births(self._mqtt_client)
+
+    def on_dcmd_message(self, topic: str, message: Any, params: dict = None):
+        print(f"Received message on topic {topic}: {message} --- {params}")
+        payload = self.parse_sparkplug_b_payload(message)
+        for metric in payload.metrics:
+            print(metric)
 
     def on_connect(self, client, userdata, flags, reason_code, properties=None):
         if reason_code == 0:

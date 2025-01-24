@@ -8,6 +8,7 @@ from typing import Any, Callable, Tuple
 from pydantic import BaseModel
 from redis import Redis
 from redis_streams.consumer import Consumer, RedisMsg
+from walrus import Database
 
 from messaging_streaming_wrappers.core.wrapper_base import (MarshalerFactory, MessageManager, MessageReceiver,
                                                             Publisher, Subscriber)
@@ -24,11 +25,11 @@ class RedisMessage(BaseModel):
     payload: Any
 
 
-class RedisStreamConsumer(Thread, ABC):
+class WalrusStreamConsumer(Thread, ABC):
 
     def __init__(
             self,
-            redis: Redis,
+            db: Database,
             stream: str,
             callback: Callable,
             consumer_group: str = None,
@@ -36,7 +37,7 @@ class RedisStreamConsumer(Thread, ABC):
             max_wait_time_ms: int = 5000
     ):
         super().__init__()
-        self.redis = redis
+        self.db = db
         self.stream = stream
         self.callback = callback
         self.consumer_group = consumer_group
@@ -107,11 +108,11 @@ class RedisPublisher(Publisher):
     def publish(self, topic: str, message: Any, **kwargs: Any):
         marshaler = self._marshaler_factory.create(marshaler_type=kwargs.get("marshaler", "json"))
         payload = RedisMessage(
-            mid=uuid.uuid4().hex,  # UUID
-            ts=int(time.time() * 1000),  # TS
-            type=marshaler.type_name,  # 'json'
-            topic=topic,  # path the object in S3
-            payload=marshaler.marshal(message),  # S3 Event marshaled to JSON
+            mid=uuid.uuid4().hex,
+            ts=int(time.time() * 1000),
+            type=marshaler.type_name,
+            topic=topic,
+            payload=marshaler.marshal(message),
         )
         mid = self._redis_client.xadd(name=self._stream_name, fields=payload.model_dump())
         return 0, mid
