@@ -137,7 +137,10 @@ class MqttMessageManager(MessageManager):
         if not mqtt_publisher:
             mqtt_publisher = MqttPublisher(mqtt_client=mqtt_client)
         if not mqtt_subscriber:
-            mqtt_subscriber = MqttSubscriber(mqtt_client=mqtt_client, message_receiver=MqttMessageReceiver())
+            mqtt_subscriber = MqttSubscriber(
+                mqtt_client=mqtt_client,
+                message_receiver=MqttMessageReceiver()
+            )
 
         super().__init__(
             publisher=mqtt_publisher,

@@ -4,9 +4,21 @@ import paho.mqtt.client as mqtt
 from sparkplub_b_packets.builder import EdgeDevice, EdgeNode
 from sparkplub_b_packets.core import sparkplug_b_pb2
 
-from messaging_streaming_wrappers.mqtt_messaging import MqttMessageManager, MqttPublisher, MqttSubscriber
+from messaging_streaming_wrappers.mqtt_messaging import MqttMessageManager, MqttMessageReceiver, MqttPublisher, MqttSubscriber
 from messaging_streaming_wrappers.core.helpers.logging_helpers import get_logger
 log = get_logger(__name__)
+
+
+class SpbMessageReceiver(MqttMessageReceiver):
+
+    def on_message(self, client, userdata, message):
+        topic = message.topic
+        payload = message.payload
+        self.receive(topic=topic, payload=payload, params={
+            "publisher": MqttPublisher(mqtt_client=client),
+            "userdata": userdata,
+            "message": message
+        })
 
 
 class SparkplugBMessageManager(MqttMessageManager):
@@ -15,11 +27,16 @@ class SparkplugBMessageManager(MqttMessageManager):
             self,
             mqtt_client: mqtt.Client,
             edge_node: EdgeNode,
-            edge_devices: Dict[str, EdgeDevice] = None,
-            mqtt_publisher: MqttPublisher = None,
-            mqtt_subscriber: MqttSubscriber = None,
+            edge_devices: Dict[str, EdgeDevice] = None
     ):
-        super().__init__(mqtt_client, mqtt_publisher, mqtt_subscriber)
+        super().__init__(
+            mqtt_client=mqtt_client,
+            mqtt_publisher=MqttPublisher(mqtt_client=mqtt_client),
+            mqtt_subscriber=MqttSubscriber(
+                mqtt_client=mqtt_client,
+                message_receiver=SpbMessageReceiver()
+            )
+        )
         self._edge_node = edge_node
         self._edge_devices = edge_devices if edge_devices else {}
 
@@ -40,6 +57,7 @@ class SparkplugBMessageManager(MqttMessageManager):
         return f"spBv1.0/{self.edge_node.group}/DCMD/{self.edge_node.node}/#"
 
     def _publish_node_birth(self, client: mqtt.Client):
+        log.debug(f"Node birth for [{self.edge_node.group}/{self.edge_node.node}]")
         client.publish(
             topic=self.edge_node.birth_certificate().topic,
             payload=self.edge_node.birth_certificate().payload()
@@ -47,13 +65,14 @@ class SparkplugBMessageManager(MqttMessageManager):
 
     def _publish_device_births(self, client: mqtt.Client):
         for device_id, edge_device in self.edge_devices.items():
-            log.debug(f"Device birth for [{device_id}]")
+            log.debug(f"Device birth for [{self.edge_node.group}/{self.edge_node.node}] - [{device_id}]")
             client.publish(
                 topic=edge_device.birth_certificate().topic,
                 payload=edge_device.birth_certificate().payload()
             )
 
-    def parse_sparkplug_b_payload(self, payload):
+    @staticmethod
+    def parse_sparkplug_b_payload(payload):
         spb_payload = sparkplug_b_pb2.Payload()
         spb_payload.ParseFromString(payload)
         return spb_payload

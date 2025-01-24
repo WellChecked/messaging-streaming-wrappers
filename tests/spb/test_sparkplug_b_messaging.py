@@ -3,8 +3,9 @@ import random
 
 import paho.mqtt.client as mqtt
 from sparkplub_b_packets.builder import EdgeDevice, EdgeNode
+from sparkplub_b_packets.packets import NCmdPacket
 
-from spb.example_sparkplug_b_builder import EdgeComputer, OGIDevice
+from spb.example_sparkplug_b_builder import EdgeComputer, NvidiaNCmdPacket, OGIDevice
 from messaging_streaming_wrappers.sparkplug_b_messaging import SparkplugBMessageManager
 
 
@@ -22,6 +23,10 @@ def perform_spb_messaging() -> None:
         )
         return packet
 
+    def get_ncmd_data(node: EdgeNode) -> NCmdPacket:
+        ncmd = NvidiaNCmdPacket(group=node.group, node=node.node)
+        return ncmd
+
     def get_device_data(device: EdgeDevice):
         packet = device.data_packet(
             setpoint=get_random_int(1, 255),
@@ -33,7 +38,7 @@ def perform_spb_messaging() -> None:
         return packet
 
     message_manager = SparkplugBMessageManager(
-        mqtt_client=mqtt.Client(protocol=mqtt.MQTTv5),
+        mqtt_client=mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv5),
         edge_node=EdgeComputer(group="ascent.watson", node="watson"),
         edge_devices={
             "OGI": OGIDevice(group="ascent.watson", node="watson", device_id="OGI")
@@ -42,11 +47,11 @@ def perform_spb_messaging() -> None:
 
     message_manager.subscriber.subscribe(
         topic=message_manager.node_subscription_topic,
-        callback=message_manager.subscriber.print_message
+        callback=message_manager.on_ncmd_message
     )
     message_manager.subscriber.subscribe(
         topic=message_manager.device_subscription_topic,
-        callback=message_manager.subscriber.print_message
+        callback=message_manager.on_dcmd_message
     )
 
     message_manager.startup(host='localhost', port=1883, keepalive=60)
@@ -57,6 +62,9 @@ def perform_spb_messaging() -> None:
 
             device_packet = get_device_data(message_manager.edge_devices["OGI"])
             message_manager.publish(topic=device_packet.topic, message=device_packet.payload())
+
+            ncmd_packet = get_ncmd_data(message_manager.edge_node)
+            message_manager.publish(topic=ncmd_packet.topic, message=ncmd_packet.payload())
 
             time.sleep(1.0)
 
