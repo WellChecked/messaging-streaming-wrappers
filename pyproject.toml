@@ -12,7 +12,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name="messaging_streaming_wrappers"
-version="0.6.2025"
+version="0.7.2025"
 authors = [
   { name="Hank Haines", email="hankhaines@wellchecked.com" },
 ]
