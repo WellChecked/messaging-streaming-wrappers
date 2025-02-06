@@ -79,20 +79,25 @@ class SparkplugBMessageManager(MqttMessageManager):
 
     def on_ncmd_message(self, topic: str, message: Any, params: dict = None):
         print(f"Received message on topic {topic}: {message} --- {params}")
+        rebirth = False
         payload = self.parse_sparkplug_b_payload(message)
         for metric in payload.metrics:
-            if metric.name and metric.name == 'Node Control/Rebirth':
+            log.debug(f"Node control [{metric.name}] for [{self.edge_node.group}/{self.edge_node.node}]: {metric.value}")
+            if not rebirth:
                 self._publish_node_birth(self._mqtt_client)
                 self._publish_device_births(self._mqtt_client)
-            if metric.name and metric.name == 'Node Control/Reboot':
-                self._publish_node_birth(self._mqtt_client)
-                self._publish_device_births(self._mqtt_client)
+            rebirth = True
 
     def on_dcmd_message(self, topic: str, message: Any, params: dict = None):
         print(f"Received message on topic {topic}: {message} --- {params}")
+        rebirth = False
         payload = self.parse_sparkplug_b_payload(message)
         for metric in payload.metrics:
-            print(metric)
+            log.debug(f"Data control [{metric.name}] for [{self.edge_node.group}/{self.edge_node.node}]: {metric.value}")
+            if not rebirth:
+                self._publish_node_birth(self._mqtt_client)
+                self._publish_device_births(self._mqtt_client)
+            rebirth = True
 
     def on_connect(self, client, userdata, flags, reason_code, properties=None):
         if reason_code == 0:
