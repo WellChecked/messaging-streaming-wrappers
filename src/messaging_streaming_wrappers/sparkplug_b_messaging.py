@@ -60,7 +60,8 @@ class SparkplugBMessageManager(MqttMessageManager):
         log.debug(f"Node birth for [{self.edge_node.group}/{self.edge_node.node}]")
         client.publish(
             topic=self.edge_node.birth_certificate().topic,
-            payload=self.edge_node.birth_certificate().payload()
+            payload=self.edge_node.birth_certificate().payload(),
+            qos=0, retain=False
         )
 
     def _publish_device_births(self, client: mqtt.Client):
@@ -68,7 +69,8 @@ class SparkplugBMessageManager(MqttMessageManager):
             log.debug(f"Device birth for [{self.edge_node.group}/{self.edge_node.node}] - [{device_id}]")
             client.publish(
                 topic=edge_device.birth_certificate().topic,
-                payload=edge_device.birth_certificate().payload()
+                payload=edge_device.birth_certificate().payload(),
+                qos=0, retain=False
             )
 
     @staticmethod
@@ -157,6 +159,12 @@ class SparkplugBMessageManager(MqttMessageManager):
             self.edge_node.death_certificate().payload(),
             0, False
         )
+        for device_id, edge_device in self.edge_devices.items():
+            self._mqtt_client.will_set(
+                edge_device.death_certificate().topic,
+                edge_device.death_certificate().payload(),
+                0, False
+            )
 
         self._mqtt_client.on_connect = self.on_connect
         self._mqtt_client.on_disconnect = self.on_disconnect
