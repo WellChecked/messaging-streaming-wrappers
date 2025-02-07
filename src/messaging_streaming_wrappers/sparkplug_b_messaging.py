@@ -157,13 +157,13 @@ class SparkplugBMessageManager(MqttMessageManager):
         self._mqtt_client.will_set(
             self.edge_node.death_certificate().topic,
             self.edge_node.death_certificate().payload(),
-            0, False
+            1, False
         )
         for device_id, edge_device in self.edge_devices.items():
             self._mqtt_client.will_set(
                 edge_device.death_certificate().topic,
                 edge_device.death_certificate().payload(),
-                0, False
+                1, False
             )
 
         self._mqtt_client.on_connect = self.on_connect
