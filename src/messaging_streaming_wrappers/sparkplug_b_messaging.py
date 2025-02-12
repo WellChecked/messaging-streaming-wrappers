@@ -40,6 +40,7 @@ class SparkplugBMessageManager(MqttMessageManager):
         )
         self._edge_node = edge_node
         self._edge_devices = edge_devices if edge_devices else {}
+        self._host_systems = {}
 
     @property
     def edge_node(self) -> EdgeNode:
@@ -58,6 +59,9 @@ class SparkplugBMessageManager(MqttMessageManager):
         if edge_device is None:
             raise ValueError(f"Unknown device {device}")
         return edge_device.device_command().topic
+
+    def create_state_subscription(self, callback: Callable):
+        self.subscriber.subscribe(topic=f"STATE/#", callback=callback)
 
     def create_node_subscription(self, callback: Callable):
         self.subscriber.subscribe(self.edge_node.node_command().topic, callback)
@@ -89,6 +93,16 @@ class SparkplugBMessageManager(MqttMessageManager):
         spb_payload = sparkplug_b_pb2.Payload()
         spb_payload.ParseFromString(payload)
         return spb_payload
+
+    def on_state_change(self, topic: str, message: Any, params: dict = None):
+        _, host_id = topic.split("/")
+        current_state = message
+
+        self._host_systems[host_id] = message
+        log.debug(f"Host system [{host_id}] is now [{message}]")
+
+        self._publish_node_birth(self._mqtt_client)
+        self._publish_device_births(self._mqtt_client)
 
     def on_ncmd_message(self, topic: str, message: Any, params: dict = None):
         print(f"Received NCMD message on topic {topic}: {message} --- {params}")
