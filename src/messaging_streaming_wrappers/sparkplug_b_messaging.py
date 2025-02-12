@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from typing import Dict, Any
 
 import paho.mqtt.client as mqtt
@@ -46,15 +47,24 @@ class SparkplugBMessageManager(MqttMessageManager):
 
     @property
     def node_subscription_topic(self):
-        return f"spBv1.0/{self.edge_node.group}/NCMD/{self.edge_node.node}/#"
+        return self.edge_node.node_command().topic
 
     @property
     def edge_devices(self) -> Dict[str, EdgeDevice]:
         return self._edge_devices
 
-    @property
-    def device_subscription_topic(self):
-        return f"spBv1.0/{self.edge_node.group}/DCMD/{self.edge_node.node}/#"
+    def device_subscription_topic(self, device: str) -> str:
+        edge_device = self.edge_devices.get(device)
+        if edge_device is None:
+            raise ValueError(f"Unknown device {device}")
+        return edge_device.device_command().topic
+
+    def create_node_subscription(self, callback: Callable):
+        self.subscriber.subscribe(self.edge_node.node_command().topic, callback)
+
+    def create_device_subscriptions(self, callback: Callable):
+        for key, device in self._edge_devices.items():
+            self.subscriber.subscribe(device.device_command().topic, callback)
 
     def _publish_node_birth(self, client: mqtt.Client):
         log.debug(f"Node birth for [{self.edge_node.group}/{self.edge_node.node}]")
