@@ -62,9 +62,10 @@ class SparkplugBMessageManager(MqttMessageManager):
     def create_node_subscription(self, callback: Callable):
         self.subscriber.subscribe(self.edge_node.node_command().topic, callback)
 
-    def create_device_subscriptions(self, callback: Callable):
+    def create_device_subscriptions(self, callbacks: Dict[str, Callable]):
         for key, device in self._edge_devices.items():
-            self.subscriber.subscribe(device.device_command().topic, callback)
+            if key in callbacks:
+                self.subscriber.subscribe(device.device_command().topic, callbacks[key])
 
     def _publish_node_birth(self, client: mqtt.Client):
         log.debug(f"Node birth for [{self.edge_node.group}/{self.edge_node.node}]")
