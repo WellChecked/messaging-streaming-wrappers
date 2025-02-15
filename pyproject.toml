@@ -4,9 +4,9 @@ requires = [
     "paho-mqtt==2.1.0",
     "pydantic==2.10.5",
     "protobuf==5.29.3",
-    "sparkplug-b-packets==0.2.2025",
     "redis[hiredis]==5.2.1",
-    "redis-streams==0.2.0"
+    "redis-streams==0.2.0",
+    "sparkplug-b-packets"
 ]
 build-backend = "setuptools.build_meta"
 
