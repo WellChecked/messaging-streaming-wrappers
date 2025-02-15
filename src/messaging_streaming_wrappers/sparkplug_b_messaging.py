@@ -61,7 +61,7 @@ class SparkplugBMessageManager(MqttMessageManager):
         return edge_device.device_command().topic
 
     def create_state_subscription(self, callback: Callable):
-        self.subscriber.subscribe(topic=f"STATE/#", callback=callback)
+        self.subscriber.subscribe(topic=f"spBv1.0/STATE/#", callback=callback)
 
     def create_node_subscription(self, callback: Callable):
         self.subscriber.subscribe(self.edge_node.node_command().topic, callback)

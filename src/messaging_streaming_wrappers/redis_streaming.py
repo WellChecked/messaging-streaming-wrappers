@@ -1,16 +1,19 @@
+import inspect
+import json
+import random
 import uuid
 import time
 
-from abc import ABC
 from threading import Thread
 from typing import Any, Callable, Tuple
 
+import asyncer
 from pydantic import BaseModel
 from redis import Redis
-from redis_streams.consumer import Consumer, RedisMsg
+from redis import exceptions as redis_exceptions
 
-from messaging_streaming_wrappers.core.wrapper_base import (MarshalerFactory, MessageManager, MessageReceiver,
-                                                            Publisher, Subscriber)
+from messaging_streaming_wrappers.core.wrapper_base import (
+    MarshalerFactory, MessageManager, MessageReceiver, Publisher, Subscriber)
 from messaging_streaming_wrappers.core.helpers.logging_helpers import get_logger
 
 log = get_logger(__name__)
@@ -24,78 +27,6 @@ class RedisMessage(BaseModel):
     payload: Any
 
 
-class RedisStreamConsumer(Thread, ABC):
-
-    def __init__(
-            self,
-            redis: Redis,
-            stream: str,
-            callback: Callable,
-            consumer_group: str = None,
-            batch_size: int = 10,
-            max_wait_time_ms: int = 5000
-    ):
-        super().__init__()
-        self.redis = redis
-        self.stream = stream
-        self.callback = callback
-        self.consumer_group = consumer_group
-        self.batch_size = batch_size
-        self.max_wait_time_ms = max_wait_time_ms
-        self._running = False
-        self._active = False
-        self._consumer = None
-
-    @property
-    def consumer(self):
-        return self._consumer
-
-    @property
-    def running(self):
-        return self._running
-
-    @property
-    def active(self):
-        return self._active
-
-    def start(self):
-        if not self.running:
-            self._running = True
-            super().start()
-
-    def stop(self):
-        self._running = False
-        while self.active:
-            time.sleep(0.3)
-
-    def run(self):
-        self._consumer = Consumer(
-            redis_conn=self.redis,
-            stream=self.stream,
-            consumer_group=self.consumer_group,
-            batch_size=self.batch_size,
-            max_wait_time_ms=self.max_wait_time_ms,
-            cleanup_on_exit=False
-        )
-        self._active = True
-        while self._running:
-            messages = self._consumer.get_items()
-            total_messages = len(messages)
-            log.debug(f"Received {total_messages} messages")
-            for i, item in enumerate(messages, 1):
-                log.debug(f"Consuming {i}/{total_messages} message:{item}")
-                try:
-                    for msgid, content in item.content:
-                        msgid = msgid.decode("utf-8")
-                        if content:
-                            self.callback(index=i, total=total_messages, message=(msgid, content))
-                        self._consumer.remove_item_from_stream(item_id=msgid)
-                except Exception as e:
-                    log.error(f"Error while processing message: {e}")
-                    log.exception("A problem occurred while ingesting a message")
-        self._active = False
-
-
 class RedisPublisher(Publisher):
 
     def __init__(self, redis_client: Redis, stream_name: str, **kwargs: Any):
@@ -105,6 +36,9 @@ class RedisPublisher(Publisher):
             else kwargs.get("marshaler_factory")
 
     def publish(self, topic: str, message: Any, **kwargs: Any):
+        stream_name = kwargs.get("stream_name", self._stream_name)
+        assert stream_name, "A stream name (stream_name) must be provided for publishing"
+
         marshaler = self._marshaler_factory.create(marshaler_type=kwargs.get("marshaler", "json"))
         payload = RedisMessage(
             mid=uuid.uuid4().hex,  # UUID
@@ -117,28 +51,273 @@ class RedisPublisher(Publisher):
         return 0, mid
 
 
+class RedisConsumer(Thread):
+
+    def __init__(
+            self,
+            redis_client: Redis,
+            streams: dict,
+            callback: Callable,
+            consumer_id: str = None,
+            count: int = 2,
+            block: int = 1000
+    ):
+        assert redis_client.get_encoder().decode_responses, "decode_responses must be True"
+
+        super().__init__()
+
+        self._redis_client = redis_client
+        self._streams = streams
+        self._callback = callback
+        self._consumer_id = consumer_id if consumer_id else f"consumer-{random.uniform(1, 999999)}"
+        self._count = count
+        self._block = block
+        self._running = True
+        self._active = False
+
+    @property
+    def active(self):
+        return self._active
+
+    def shutdown(self) -> None:
+        self._running = False
+        self.join()
+
+    def run(self) -> None:
+        streams = self._streams
+
+        self._active = True
+        while self._running:
+            items = self._redis_client.xread(
+                streams=streams,
+                count=self._count,
+                block=self._block
+            )
+
+            for stream, messages in items:
+                total_messages = len(messages)
+                log.debug(f"Received {total_messages} messages")
+
+                i = 0
+                for msgid, message in messages:
+                    # TODO: Ensure that the loop used is the same as FastAPI
+                    if inspect.iscoroutinefunction(self._callback):
+                        asyncer.runnify(self._callback)(
+                            stream_name=stream,
+                            consumer=(self._consumer_id, None),
+                            index=i,
+                            total=total_messages,
+                            message=(msgid, message)
+                        )
+                    else:
+                        self._callback(
+                            stream_name=stream,
+                            consumer=(self._consumer_id, None),
+                            index=i,
+                            total=total_messages,
+                            message=(msgid, message)
+                        )
+
+                    streams[stream] = msgid
+
+                    i += 1
+
+        self._active = False
+
+
+class RedisConsumerGroup(Thread):
+
+    def __init__(
+            self,
+            redis_client: Redis,
+            streams: dict,
+            callback: Callable,
+            consumer_group: str,
+            consumer_id: str = None,
+            count: int = 2,
+            block: int = 1000
+    ):
+        assert redis_client.get_encoder().decode_responses, "decode_responses must be True"
+
+        super().__init__()
+
+        self._redis_client = redis_client
+        self._streams = streams
+        self._callback = callback
+        self._consumer_group = consumer_group
+        self._consumer_id = consumer_id if consumer_id else f"{consumer_group}-consumer-{random.uniform(1, 999999)}"
+        self._count = count
+        self._block = block
+        self._running = True
+        self._active = False
+
+    @property
+    def active(self):
+        return self._active
+
+    def create_consumer_group(self, redis_client, stream_name: str, group_name: str, next_message_id: str) -> None:
+        try:
+            redis_client.xgroup_create(
+                name=stream_name,
+                groupname=group_name,
+                id=next_message_id,
+                mkstream=True
+            )
+        except redis_exceptions.ResponseError as e:
+            if 'BUSYGROUP' in str(e):
+                print(f"Consumer group '{group_name}' already exists for stream '{stream_name}'.")
+            else:
+                raise e
+
+    def last_message_id(self, redis_client: Redis, stream: str, group_name: str) -> str:
+        result = redis_client.xinfo_groups(name=stream)
+        for group_info in result:
+            if group_info['name'] == group_name:
+                return group_info['last-delivered-id']
+
+    def shutdown(self) -> None:
+        self._running = False
+        self.join()
+
+    def run(self) -> None:
+        def convert_payload(payload):
+            try:
+                return json.loads(payload)
+            except json.JSONDecodeError:
+                return payload
+
+        for stream_name, next_message_id in self._streams.items():
+            last_message_id = self.last_message_id(redis_client=self._redis_client, stream=stream_name,
+                                                   group_name=self._consumer_group)
+            print(f"Processing from {last_message_id}")
+
+        for stream_name, next_message_id in self._streams.items():
+            self.create_consumer_group(
+                redis_client=self._redis_client,
+                stream_name=stream_name,
+                group_name=self._consumer_group,
+                next_message_id="$"
+            )
+
+        self._active = True
+        while self._running:
+            items = self._redis_client.xreadgroup(
+                streams=self._streams,
+                groupname=self._consumer_group,
+                consumername=self._consumer_id,
+                count=self._count,
+                block=self._block,
+                noack=True
+            )
+
+            for stream, messages in items:
+                total_messages = len(messages)
+                log.debug(f"Received {total_messages} messages")
+
+                i = 0
+                for msgid, message in messages:
+                    log.debug(f"Consuming {i}/{total_messages} message:{msgid}")
+
+                    try:
+                        # TODO: Ensure that the loop used is the same as FastAPI
+                        if inspect.iscoroutinefunction(self._callback):
+                            asyncer.runnify(self._callback)(
+                                stream_name=stream,
+                                consumer=(self._consumer_id, self._consumer_group),
+                                index=i,
+                                total=total_messages,
+                                message=(msgid, message)
+                            )
+                        else:
+                            self._callback(
+                                stream_name=stream,
+                                consumer=(self._consumer_id, self._consumer_group),
+                                index=i,
+                                total=total_messages,
+                                message=(msgid, message)
+                            )
+
+                        self._redis_client.xack(stream, self._consumer_group, msgid)
+                    except json.JSONDecodeError as json_error:
+                        log.error(f"Error decoding message: {json_error} - Message: {message}")
+                        continue
+                    i += 1
+
+        self._active = False
+
+
+class RedisConsumerFactory:
+
+    @staticmethod
+    def create(
+            redis_client: Redis,
+            callback: Callable,
+            streams: dict = None,
+            stream_name: str = None,
+            consumer_group: str = None,
+            consumer_id: str = None,
+            count: int = 2,
+            block: int = 1000
+    ):
+        if not streams:
+            streams = {}
+            if stream_name:
+                if consumer_group:
+                    streams = {
+                        stream_name: '>'
+                    }
+                else:
+                    streams = {
+                        stream_name: '$'
+                    }
+
+        if consumer_group:
+            return RedisConsumerGroup(
+                redis_client=redis_client,
+                streams=streams,
+                callback=callback,
+                consumer_group=consumer_group,
+                consumer_id=consumer_id,
+                count=count,
+                block=block
+            )
+        else:
+            return RedisConsumer(
+                redis_client=redis_client,
+                streams=streams,
+                callback=callback,
+                consumer_id=consumer_id,
+                count=count,
+                block=block
+            )
+
+
 class RedisMessageReceiver(MessageReceiver):
 
     def __init__(
             self,
             redis_client: Redis,
-            stream_name: str,
+            streams: dict = None,
+            stream_name: str = None,
+            consumer_id: str = None,
             consumer_group: str = None,
-            batch_size: int = 10,
-            max_wait_time_ms: int = 5000,
+            count: int = 10,
+            block: int = 5000,
             **kwargs: Any
     ):
         super().__init__()
         self._marshaler_factory = MarshalerFactory() if "marshaler_factory" not in kwargs \
             else kwargs.get("marshaler_factory")
 
-        self._redis_stream_consumer = RedisStreamConsumer(
-            redis=redis_client,
-            stream=stream_name,
+        self._redis_stream_consumer = RedisConsumerFactory.create(
+            redis_client=redis_client,
+            streams=streams,
+            stream_name=stream_name,
             callback=self.on_message,
-            consumer_group=consumer_group if consumer_group else f"{stream_name}-group",
-            batch_size=batch_size,
-            max_wait_time_ms=max_wait_time_ms
+            consumer_group=consumer_group,
+            consumer_id=consumer_id,
+            count=count,
+            block=block
         )
 
     @property
@@ -151,31 +330,30 @@ class RedisMessageReceiver(MessageReceiver):
             time.sleep(0.3)
 
     def shutdown(self):
-        self._redis_stream_consumer.stop()
-        self._redis_stream_consumer.join()
+        self.consumer.shutdown()
 
-    def on_message(self, index: int, total: int, message: Tuple[str, dict]):
+    def on_message(self, stream_name: str, consumer: Tuple[str, str], index: int, total: int, message: Tuple[str, RedisMessage]):
         def unmarshal_payload(payload, marshal_type):
             marshaler = self._marshaler_factory.create(marshaler_type=marshal_type)
             return marshaler.unmarshal(payload)
 
         msgid, content = message
-        log.debug(f"Received message on index {index} of {total} with msgid {msgid} and content {content}")
+        log.debug(
+            f"Received message from [{stream_name}] for [{consumer}] on index {index} of {total} with "
+            f" msgid {msgid} and content {content}"
+        )
 
-        message_mid = content[b'mid'].decode("utf-8") if b'mid' in content else msgid
-        message_ts = int(content[b'ts'].decode("utf-8")) if b'ts' in content else int(time.time() * 1000)
-        message_type = content[b'type'].decode("utf-8") if b'type' in content else 'json'
-        message_topic = content[b'topic'].decode("utf-8")
-        message_payload = content[b'payload'].decode("utf-8")
-        published_payload = unmarshal_payload(payload=message_payload, marshal_type=message_type)
-        self.receive(topic=message_topic, payload={"payload": published_payload}, params={
+        redis_message = RedisMessage.model_validate(content)
+        redis_message.payload = unmarshal_payload(payload=redis_message.payload, marshal_type=redis_message.type)
+
+        self.receive(topic=redis_message.topic, payload=redis_message.payload, params={
             "i": index,
             "n": total,
-            "ts": message_ts,
-            "mid": message_mid,
+            "stream": stream_name,
+            "consumer": consumer,
             "msgid": msgid,
-            "type": message_type,
-            "content": content
+            "content": content,
+            "message": redis_message
         })
 
 
@@ -185,9 +363,9 @@ class RedisSubscriber(Subscriber):
         super().__init__(message_receiver)
         self._redis_client = redis_client
 
-    def subscribe(self, topic: str, callback: Callable[[str, Any, dict], None]):
+    def subscribe(self, topic: str, callback: Callable[[str, Any, dict], None], **kwargs: Any):
         print(f"Subscribing to {topic}")
-        self._message_receiver.register_handler(topic, callback)
+        self._message_receiver.register_handler(topic, callback, **kwargs)
         print(f"Subscribed to {topic}")
 
     def unsubscribe(self, topic: str):
@@ -206,12 +384,17 @@ class RedisStreamManager(MessageManager):
             redis_client: Redis,
             redis_publisher: RedisPublisher = None,
             redis_subscriber: RedisSubscriber = None,
+            streams: dict = None,
             stream_name: str = None,
             consumer_group: str = None,
             batch_size: int = 10,
             max_wait_time_ms: int = 5000
     ):
-        stream_name = stream_name if stream_name else f"incoming-topics-stream"
+        assert redis_client.get_encoder().decode_responses == True, "decode_responses must be True"
+        assert streams or stream_name, "Either streams or stream_name must be provided"
+        assert batch_size > 0, "batch_size must be greater than 0"
+        assert max_wait_time_ms > 0, "max_wait_time_ms must be greater than 0"
+
         super().__init__(
             redis_publisher if redis_publisher else (
                 RedisPublisher(redis_client=redis_client, stream_name=stream_name)
@@ -221,10 +404,11 @@ class RedisStreamManager(MessageManager):
                     redis_client=redis_client,
                     message_receiver=RedisMessageReceiver(
                         redis_client=redis_client,
+                        streams=streams,
                         stream_name=stream_name,
-                        consumer_group=consumer_group if consumer_group else None,
-                        batch_size=batch_size,
-                        max_wait_time_ms=max_wait_time_ms
+                        consumer_group=consumer_group,
+                        count=batch_size,
+                        block=max_wait_time_ms
                     )
                 )
             )

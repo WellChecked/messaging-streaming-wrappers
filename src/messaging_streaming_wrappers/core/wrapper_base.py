@@ -1,8 +1,10 @@
+import inspect
 import json
 import pickle
 from abc import ABC, abstractmethod
 from typing import Any, Callable, cast
 
+import asyncer
 from paho.mqtt import matcher as mqtt_matcher
 
 from messaging_streaming_wrappers.core.helpers.logging_helpers import get_logger
@@ -15,12 +17,13 @@ class MessageReceiver:
     def __init__(self):
         self._matcher = mqtt_matcher.MQTTMatcher()
         self._topics = []
+        self._params = {}
 
     @property
     def topics(self):
         return self._topics
 
-    def register_handler(self, topic: str, handler: Callable[[str, Any, dict], None]):
+    def register_handler(self, topic: str, handler: Callable[[str, Any, dict], None], **kwargs):
         """
         Register a handler for a topic pattern.  The topic can utilize MQTT wildcards.  If there
         is already a topic handler assigned the old handler will be replaced.
@@ -30,6 +33,7 @@ class MessageReceiver:
         """
         self._matcher[topic] = handler
         self._topics.append(topic)
+        self._params = {**kwargs}
         return True
 
     def unregister_handler(self, topic: str):
@@ -57,7 +61,10 @@ class MessageReceiver:
         """
         log.debug(f"Received message on topic {topic}: {payload} --- {params}")
         for handler in self._matcher.iter_match(topic):
-            handler(topic, payload, params)
+            if inspect.iscoroutinefunction(handler):
+                asyncer.runnify(handler)(topic, payload, {**self._params, **params})
+            else:
+                handler(topic, payload, {**self._params, **params})
 
 
 class Marshaler(ABC):
@@ -167,7 +174,7 @@ class Subscriber:
         print(f"Received message on topic {topic}: {message} --- {params}")
 
     @abstractmethod
-    def subscribe(self, topic: str, callback: Callable[[str, Any, dict], None]):
+    def subscribe(self, topic: str, callback: Callable[[str, Any, dict], None], **kwargs: Any):
         pass
 
     @abstractmethod

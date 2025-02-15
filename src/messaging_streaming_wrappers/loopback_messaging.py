@@ -27,7 +27,7 @@ class LoopbackPublisher(Publisher):
 
 class LoopbackSubscriber(Subscriber):
 
-    def subscribe(self, topic: str, callback: Callable[[str, Any, dict], None]):
+    def subscribe(self, topic: str, callback: Callable[[str, Any, dict], None], **kwargs: Any):
         print(f"Subscribing to {topic}")
         self._message_receiver.register_handler(topic, callback)
         print(f"Subscribed to {topic}")

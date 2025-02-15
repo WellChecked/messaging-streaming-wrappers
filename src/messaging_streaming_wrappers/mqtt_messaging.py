@@ -108,7 +108,7 @@ class MqttSubscriber(Subscriber):
         self._acks[mid] = int(time.time())
         return self.wait_for_ack(mid)
 
-    def subscribe(self, topic: str, callback: Callable[[str, Any, dict], None]):
+    def subscribe(self, topic: str, callback: Callable[[str, Any, dict], None], **kwargs: Any):
         print(f"Subscribing to {topic}")
         self._mqtt_client.subscribe(topic)
         self._message_receiver.register_handler(topic, callback)
