@@ -47,7 +47,7 @@ class RedisPublisher(Publisher):
             topic=topic,  # path the object in S3
             payload=marshaler.marshal(message),  # S3 Event marshaled to JSON
         )
-        mid = self._redis_client.xadd(name=self._stream_name, fields=payload.model_dump())
+        mid = self._redis_client.xadd(name=stream_name, fields=payload.model_dump())
         return 0, mid
 
 
