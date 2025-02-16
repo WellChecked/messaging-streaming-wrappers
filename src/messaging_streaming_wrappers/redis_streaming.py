@@ -169,7 +169,8 @@ class RedisConsumerGroup(Thread):
             else:
                 raise e
 
-    def last_message_id(self, redis_client: Redis, stream: str, group_name: str) -> str:
+    @staticmethod
+    def last_message_id(redis_client: Redis, stream: str, group_name: str) -> str:
         result = redis_client.xinfo_groups(name=stream)
         for group_info in result:
             if group_info['name'] == group_name:
@@ -180,23 +181,12 @@ class RedisConsumerGroup(Thread):
         self.join()
 
     def run(self) -> None:
-        def convert_payload(payload):
-            try:
-                return json.loads(payload)
-            except json.JSONDecodeError:
-                return payload
-
-        for stream_name, next_message_id in self._streams.items():
-            last_message_id = self.last_message_id(redis_client=self._redis_client, stream=stream_name,
-                                                   group_name=self._consumer_group)
-            print(f"Processing from {last_message_id}")
-
-        for stream_name, next_message_id in self._streams.items():
+        for stream_name, _ in self._streams.items():
             self.create_consumer_group(
                 redis_client=self._redis_client,
                 stream_name=stream_name,
                 group_name=self._consumer_group,
-                next_message_id="$"
+                next_message_id="$"  # Start group at current position of stream
             )
 
         self._active = True
