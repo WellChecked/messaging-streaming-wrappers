@@ -95,8 +95,7 @@ class SparkplugBMessageManager(MqttMessageManager):
         return spb_payload
 
     def on_state_change(self, topic: str, message: Any, params: dict = None):
-        _, host_id = topic.split("/")
-        current_state = message
+        host_id = topic.split("/")[-1]
 
         self._host_systems[host_id] = message
         log.debug(f"Host system [{host_id}] is now [{message}]")
