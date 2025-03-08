@@ -1,6 +1,7 @@
 import inspect
 import json
 import random
+import traceback
 import uuid
 import time
 
@@ -100,25 +101,33 @@ class RedisConsumer(Thread):
 
                 i = 0
                 for msgid, message in messages:
-                    # TODO: Ensure that the loop used is the same as FastAPI
-                    if inspect.iscoroutinefunction(self._callback):
-                        asyncer.runnify(self._callback)(
-                            stream_name=stream,
-                            consumer=(self._consumer_id, None),
-                            index=i,
-                            total=total_messages,
-                            message=(msgid, message)
-                        )
-                    else:
-                        self._callback(
-                            stream_name=stream,
-                            consumer=(self._consumer_id, None),
-                            index=i,
-                            total=total_messages,
-                            message=(msgid, message)
-                        )
+                    try:
+                        if inspect.iscoroutinefunction(self._callback):
+                            asyncer.runnify(self._callback)(
+                                stream_name=stream,
+                                consumer=(self._consumer_id, None),
+                                index=i,
+                                total=total_messages,
+                                message=(msgid, message)
+                            )
+                        else:
+                            self._callback(
+                                stream_name=stream,
+                                consumer=(self._consumer_id, None),
+                                index=i,
+                                total=total_messages,
+                                message=(msgid, message)
+                            )
 
-                    streams[stream] = msgid
+                        streams[stream] = msgid
+
+                    except json.JSONDecodeError as json_error:
+                        log.error(f"Error decoding message: {json_error} - Message: {message}")
+                        continue
+                    except Exception as e:
+                        log.info(f"ERROR: Processing [{msgid}]:")
+                        traceback.print_exc()
+                        raise e
 
                     i += 1
 
@@ -228,9 +237,15 @@ class RedisConsumerGroup(Thread):
                             )
 
                         self._redis_client.xack(stream, self._consumer_group, msgid)
+
                     except json.JSONDecodeError as json_error:
                         log.error(f"Error decoding message: {json_error} - Message: {message}")
                         continue
+                    except Exception as e:
+                        log.info(f"ERROR: Processing [{msgid}]:")
+                        traceback.print_exc()
+                        raise e
+
                     i += 1
 
         self._active = False
