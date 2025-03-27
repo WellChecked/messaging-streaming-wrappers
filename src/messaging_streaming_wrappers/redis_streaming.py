@@ -12,6 +12,7 @@ import asyncer
 from pydantic import BaseModel
 from redis import Redis
 from redis import exceptions as redis_exceptions
+from requests import HTTPError
 
 from messaging_streaming_wrappers.core.wrapper_base import (
     MarshalerFactory, MessageManager, MessageReceiver, Publisher, Subscriber)
@@ -48,7 +49,8 @@ class RedisPublisher(Publisher):
             topic=topic,  # path the object in S3
             payload=marshaler.marshal(message),  # S3 Event marshaled to JSON
         )
-        mid = self._redis_client.xadd(name=stream_name, fields=payload.model_dump())
+        maxlen = kwargs.get("maxlen", 10000)
+        mid = self._redis_client.xadd(name=stream_name, fields=payload.model_dump(), maxlen=maxlen)
         return 0, mid
 
 
@@ -121,15 +123,16 @@ class RedisConsumer(Thread):
 
                         streams[stream] = msgid
 
-                    except json.JSONDecodeError as json_error:
-                        log.error(f"Error decoding message: {json_error} - Message: {message}")
-                        continue
-                    except Exception as e:
-                        log.info(f"ERROR: Processing [{msgid}]:")
-                        traceback.print_exc()
-                        raise e
+                        i += 1
 
-                    i += 1
+                    except json.JSONDecodeError as json_error:
+                        log.error(f"JSONDecodeError decoding message: {json_error} - Message: {message}")
+
+                    except Exception as e:
+                        log.error(f"EXCEPTION: Processing [{msgid}]:")
+                        traceback.print_exc()
+                        log.error(f"ERROR found: consumer stopped")
+                        self._running = False
 
         self._active = False
 
@@ -238,15 +241,16 @@ class RedisConsumerGroup(Thread):
 
                         self._redis_client.xack(stream, self._consumer_group, msgid)
 
+                        i += 1
+
                     except json.JSONDecodeError as json_error:
                         log.error(f"Error decoding message: {json_error} - Message: {message}")
-                        continue
-                    except Exception as e:
-                        log.info(f"ERROR: Processing [{msgid}]:")
-                        traceback.print_exc()
-                        raise e
 
-                    i += 1
+                    except Exception as e:
+                        log.error(f"ERROR: Processing [{msgid}]:")
+                        traceback.print_exc()
+                        log.error(f"ERROR found: consumer stopped")
+                        self._running = False
 
         self._active = False
 
