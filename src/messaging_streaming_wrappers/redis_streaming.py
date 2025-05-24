@@ -37,6 +37,10 @@ class RedisPublisher(Publisher):
         self._marshaler_factory = MarshalerFactory() if "marshaler_factory" not in kwargs \
             else kwargs.get("marshaler_factory")
 
+    @property
+    def redis_client(self):
+        return self._redis_client
+
     def publish(self, topic: str, message: Any, **kwargs: Any):
         stream_name = kwargs.get("stream_name", self._stream_name)
         assert stream_name, "A stream name (stream_name) must be provided for publishing"
@@ -77,6 +81,10 @@ class RedisConsumer(Thread):
         self._block = block
         self._running = True
         self._active = False
+
+    @property
+    def redis_client(self):
+        return self._redis_client
 
     @property
     def active(self):
