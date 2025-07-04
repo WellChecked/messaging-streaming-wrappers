@@ -6,13 +6,12 @@ import uuid
 import time
 
 from threading import Thread
-from typing import Any, Callable, Tuple
+from typing import Any, Callable, Tuple, Optional
 
 import asyncer
 from pydantic import BaseModel
 from redis import Redis
 from redis import exceptions as redis_exceptions
-from requests import HTTPError
 
 from messaging_streaming_wrappers.core.wrapper_base import (
     MarshalerFactory, MessageManager, MessageReceiver, Publisher, Subscriber)
@@ -99,48 +98,49 @@ class RedisConsumer(Thread):
 
         self._active = True
         while self._running:
-            items = self._redis_client.xread(
-                streams=streams,
-                count=self._count,
-                block=self._block
-            )
+            msgid = '0-0'
+            try:
+                items = self._redis_client.xread(
+                    streams=streams,
+                    count=self._count,
+                    block=self._block
+                )
 
-            for stream, messages in items:
-                total_messages = len(messages)
-                log.debug(f"Received {total_messages} messages")
+                for stream, messages in items:
+                    total_messages = len(messages)
+                    log.debug(f"Received {total_messages} messages")
 
-                i = 0
-                for msgid, message in messages:
-                    try:
-                        if inspect.iscoroutinefunction(self._callback):
-                            asyncer.runnify(self._callback)(
-                                stream_name=stream,
-                                consumer=(self._consumer_id, None),
-                                index=i,
-                                total=total_messages,
-                                message=(msgid, message)
-                            )
-                        else:
-                            self._callback(
-                                stream_name=stream,
-                                consumer=(self._consumer_id, None),
-                                index=i,
-                                total=total_messages,
-                                message=(msgid, message)
-                            )
+                    i = 0
+                    for msgid, message in messages:
+                        try:
+                            if inspect.iscoroutinefunction(self._callback):
+                                asyncer.runnify(self._callback)(
+                                    stream_name=stream,
+                                    consumer=(self._consumer_id, None),
+                                    index=i,
+                                    total=total_messages,
+                                    message=(msgid, message)
+                                )
+                            else:
+                                self._callback(
+                                    stream_name=stream,
+                                    consumer=(self._consumer_id, None),
+                                    index=i,
+                                    total=total_messages,
+                                    message=(msgid, message)
+                                )
 
-                        streams[stream] = msgid
+                            streams[stream] = msgid
+                            i += 1
 
-                        i += 1
+                        except json.JSONDecodeError as json_error:
+                            log.error(f"JSONDecodeError decoding message: {json_error} - Message: {message}")
 
-                    except json.JSONDecodeError as json_error:
-                        log.error(f"JSONDecodeError decoding message: {json_error} - Message: {message}")
-
-                    except Exception as e:
-                        log.error(f"EXCEPTION: Processing [{msgid}]:")
-                        traceback.print_exc()
-                        log.error(f"ERROR found: consumer stopped")
-                        self._running = False
+            except Exception as e:
+                log.error(f"EXCEPTION: Processing [{msgid}]:")
+                traceback.print_exc()
+                log.error(f"ERROR found: consumer stopped")
+                self._running = False
 
         self._active = False
 
@@ -175,7 +175,8 @@ class RedisConsumerGroup(Thread):
     def active(self):
         return self._active
 
-    def create_consumer_group(self, redis_client, stream_name: str, group_name: str, next_message_id: str) -> None:
+    @staticmethod
+    def create_consumer_group(redis_client, stream_name: str, group_name: str, next_message_id: str) -> None:
         try:
             redis_client.xgroup_create(
                 name=stream_name,
@@ -190,18 +191,24 @@ class RedisConsumerGroup(Thread):
                 raise e
 
     @staticmethod
-    def last_message_id(redis_client: Redis, stream: str, group_name: str) -> str:
+    def last_message_id(redis_client: Redis, stream: str, group_name: str) -> Optional[str]:
         result = redis_client.xinfo_groups(name=stream)
         for group_info in result:
             if group_info['name'] == group_name:
-                return group_info['last-delivered-id']
+                return str(group_info['last-delivered-id'])
+        return None
 
     def shutdown(self) -> None:
         self._running = False
         self.join()
 
     def run(self) -> None:
+        self._active = True
+
+        log.debug(f"Consumer group: {self._consumer_group}")
+
         for stream_name, _ in self._streams.items():
+            log.debug(f"Creating consumer group for stream: {stream_name}")
             self.create_consumer_group(
                 redis_client=self._redis_client,
                 stream_name=stream_name,
@@ -209,56 +216,54 @@ class RedisConsumerGroup(Thread):
                 next_message_id="$"  # Start group at current position of stream
             )
 
-        self._active = True
         while self._running:
-            items = self._redis_client.xreadgroup(
-                streams=self._streams,
-                groupname=self._consumer_group,
-                consumername=self._consumer_id,
-                count=self._count,
-                block=self._block,
-                noack=True
-            )
+            msgid = '0-0'
+            try:
+                items = self._redis_client.xreadgroup(
+                    streams=self._streams,
+                    groupname=self._consumer_group,
+                    consumername=self._consumer_id,
+                    count=self._count,
+                    block=self._block,
+                    noack=True
+                )
+                for stream, messages in items:
+                    total_messages = len(messages)
+                    log.debug(f"Received {total_messages} messages")
 
-            for stream, messages in items:
-                total_messages = len(messages)
-                log.debug(f"Received {total_messages} messages")
+                    i = 0
+                    for msgid, message in messages:
+                        log.debug(f"Consuming {i}/{total_messages} message:{msgid}")
 
-                i = 0
-                for msgid, message in messages:
-                    log.debug(f"Consuming {i}/{total_messages} message:{msgid}")
+                        try:
+                            if inspect.iscoroutinefunction(self._callback):
+                                asyncer.runnify(self._callback)(
+                                    stream_name=stream,
+                                    consumer=(self._consumer_id, self._consumer_group),
+                                    index=i,
+                                    total=total_messages,
+                                    message=(msgid, message)
+                                )
+                            else:
+                                self._callback(
+                                    stream_name=stream,
+                                    consumer=(self._consumer_id, self._consumer_group),
+                                    index=i,
+                                    total=total_messages,
+                                    message=(msgid, message)
+                                )
 
-                    try:
-                        # TODO: Ensure that the loop used is the same as FastAPI
-                        if inspect.iscoroutinefunction(self._callback):
-                            asyncer.runnify(self._callback)(
-                                stream_name=stream,
-                                consumer=(self._consumer_id, self._consumer_group),
-                                index=i,
-                                total=total_messages,
-                                message=(msgid, message)
-                            )
-                        else:
-                            self._callback(
-                                stream_name=stream,
-                                consumer=(self._consumer_id, self._consumer_group),
-                                index=i,
-                                total=total_messages,
-                                message=(msgid, message)
-                            )
+                        except json.JSONDecodeError as json_error:
+                            log.error(f"Error decoding message: {json_error} - Message: {message}")
 
                         self._redis_client.xack(stream, self._consumer_group, msgid)
-
                         i += 1
 
-                    except json.JSONDecodeError as json_error:
-                        log.error(f"Error decoding message: {json_error} - Message: {message}")
-
-                    except Exception as e:
-                        log.error(f"ERROR: Processing [{msgid}]:")
-                        traceback.print_exc()
-                        log.error(f"ERROR found: consumer stopped")
-                        self._running = False
+            except Exception as e:
+                log.error(f"ERROR: Processing [{msgid}]:")
+                traceback.print_exc()
+                log.error(f"ERROR found: consumer stopped")
+                self._running = False
 
         self._active = False
 
